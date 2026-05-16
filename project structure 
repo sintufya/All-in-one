@@ -1,0 +1,15 @@
+kudrop/
+├── backend/
+│ ├── app/
+│ │ ├── __init__.py
+│ │ ├── main.py
+│ │ ├── routes.py
+│ │ ├── mpesa.py
+│ │ └── supabase_client.py
+│ ├──.env.example
+│ ├── requirements.txt
+│ └── run.py
+└── mobile/
+    ├── App.tsx
+    ├── package.json
+    └── app.json
