@@ -1,0 +1,10 @@
+cd backend
+python -m venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp.env.example.env
+# fill in SUPABASE_URL and SUPABASE_SERVICE_KEY
+python run.py
+cd mobile
+npm install
+npx expo start
