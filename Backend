@@ -1,0 +1,153 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.31.4
+python-decouple==3.8
+requests==2.32.3
+supabase==2.7.1
+pillow==11.0.0
+SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_KEY=your_anon_key
+SUPABASE_SERVICE_KEY=your_service_key
+MPESA_CONSUMER_KEY=your_key
+MPESA_CONSUMER_SECRET=your_secret
+MPESA_PASSKEY=your_passkey
+MPESA_SHORTCODE=174379
+MPESA_ENV=sandbox
+import uvicorn
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+# empty file
+from supabase import create_client, Client
+from decouple import config
+
+url: str = config("SUPABASE_URL")
+key: str = config("SUPABASE_SERVICE_KEY")
+supabase: Client = create_client(url, key)
+import requests
+import base64
+from datetime import datetime
+from decouple import config
+
+MPESA_CONSUMER_KEY = config("MPESA_CONSUMER_KEY")
+MPESA_CONSUMER_SECRET = config("MPESA_CONSUMER_SECRET")
+MPESA_PASSKEY = config("MPESA_PASSKEY")
+MPESA_SHORTCODE = config("MPESA_SHORTCODE")
+MPESA_ENV = config("MPESA_ENV", default="sandbox")
+
+BASE_URL = "https://sandbox.safaricom.co.ke" if MPESA_ENV == "sandbox" else "https://api.safaricom.co.ke"
+
+def get_access_token():
+    url = f"{BASE_URL}/oauth/v1/generate?grant_type=client_credentials"
+    r = requests.get(url, auth=(MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET))
+    return r.json()["access_token"]
+
+def stk_push(phone, amount, order_id):
+    token = get_access_token()
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    password = base64.b64encode(f"{MPESA_SHORTCODE}{MPESA_PASSKEY}{timestamp}".encode()).decode()
+
+    payload = {
+        "BusinessShortCode": MPESA_SHORTCODE,
+        "Password": password,
+        "Timestamp": timestamp,
+        "TransactionType": "CustomerPayBillOnline",
+        "Amount": int(amount),
+        "PartyA": phone,
+        "PartyB": MPESA_SHORTCODE,
+        "PhoneNumber": phone,
+        "CallBackURL": "https://your-domain.com/mpesa/callback",
+        "AccountReference": f"Kudrop{order_id}",
+        "TransactionDesc": "Kudrop Payment"
+    }
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.post(f"{BASE_URL}/mpesa/stkpush/v1/processrequest", json=payload, headers=headers)
+    return r.json()
+from fastapi import APIRouter, UploadFile, File, Request
+from.supabase_client import supabase
+from.mpesa import stk_push
+from datetime import datetime, timedelta
+
+router = APIRouter()
+
+@router.post("/products/create")
+async def create_product(title: str, base_price: float, file: UploadFile = File(...), user_id: int = 1):
+    file_data = await file.read()
+    file_name = f"{user_id}/{datetime.now().timestamp()}.jpg"
+    supabase.storage.from_("products").upload(file_name, file_data, {"content-type": file.content_type})
+    image_url = supabase.storage.from_("products").get_public_url(file_name)
+
+    res = supabase.table("products").insert({
+        "title": title,
+        "base_price": base_price,
+        "image_url": image_url,
+        "owner_id": user_id,
+        "is_resellable": True
+    }).execute()
+
+    product = res.data[0]
+    caption = f"🔥 {title} - K{base_price}\nDM to order!\nPowered by Kudrop"
+    whatsapp_link = f"https://wa.me/?text={caption}"
+    return {"product_id": product["id"], "image_url": image_url, "whatsapp_link": whatsapp_link}
+
+@router.get("/products/resellable")
+def get_resellable_products():
+    res = supabase.table("products").select("*").eq("is_resellable", True).execute()
+    return res.data
+
+@router.post("/resell/create")
+def create_resell_product(product_id: int, reseller_id: int, markup: float):
+    product = supabase.table("products").select("*").eq("id", product_id).single().execute().data
+    final_price = product["base_price"] + markup
+
+    sale = supabase.table("resell_sales").insert({
+        "product_id": product_id,
+        "reseller_id": reseller_id,
+        "final_price": final_price,
+        "markup": markup
+    }).execute().data[0]
+
+    caption = f"🔥 {product['title']} - K{final_price}\nDM me to order!\nPowered by Kudrop"
+    return {"sale_id": sale["id"], "final_price": final_price, "whatsapp_link": f"https://wa.me/?text={caption}"}
+
+@router.post("/orders/create")
+def create_order(sale_id: int, buyer_phone: str):
+    sale = supabase.table("resell_sales").select("*").eq("id", sale_id).single().execute().data
+    mpesa_res = stk_push(buyer_phone, sale["final_price"], sale_id)
+
+    order = supabase.table("orders").insert({
+        "sale_id": sale_id,
+        "product_id": sale["product_id"],
+        "buyer_phone": buyer_phone,
+        "amount": sale["final_price"],
+        "mpesa_checkout_id": mpesa_res.get("CheckoutRequestID"),
+        "status": "pending"
+    }).execute().data[0]
+
+    return {"checkout_id": mpesa_res.get("CheckoutRequestID"), "status": "pending"}
+
+@router.post("/mpesa/callback")
+async def mpesa_callback(request: Request):
+    data = await request.json()
+    result = data['Body']['stkCallback']
+
+    if result['ResultCode'] == 0:
+        checkout_id = result['CheckoutRequestID']
+        supabase.table("orders").update({"status": "paid"}).eq("mpesa_checkout_id", checkout_id).execute()
+        order = supabase.table("orders").select("sale_id").eq("mpesa_checkout_id", checkout_id).single().execute().data
+        if order:
+            supabase.table("resell_sales").update({"status": "paid"}).eq("id", order["sale_id"]).execute()
+
+    return {"ResultCode": 0}
+
+@router.get("/leaderboard/weekly")
+def get_weekly_leaderboard():
+    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    res = supabase.rpc("get_weekly_leaderboard", {"week_ago": week_ago}).execute()
+    return {"top_resellers": res.data}
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from.routes import router
+
+app = FastAPI(title="Kudrop API")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(router)
