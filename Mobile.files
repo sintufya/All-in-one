@@ -1,0 +1,100 @@
+{
+  "name": "kudrop",
+  "version": "0.1.0",
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios"
+  },
+  "dependencies": {
+    "expo": "^51.0.0",
+    "react": "18.2.0",
+    "react-native": "0.74.3",
+    "axios": "^1.7.2",
+    "expo-image-picker": "^15.0.7",
+    "expo-sharing": "^12.0.1"
+  }
+}
+{
+  "expo": {
+    "name": "Kudrop",
+    "slug": "kudrop",
+    "platforms": ["ios", "android"]
+  }
+}
+import React, { useState, useEffect } from 'react';
+import { View, Text, Button, Image, TextInput, ScrollView } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as Sharing from 'expo-sharing';
+import axios from 'axios';
+
+const API_URL = "http://10.0.2.2:8000";
+
+export default function App() {
+  const [screen, setScreen] = useState<'create' | 'resell' | 'board'>('create');
+  const [image, setImage] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [price, setPrice] = useState("");
+  const [products, setProducts] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+
+  const pickImage = async () => {
+    let result = await ImagePicker.launchImageLibraryAsync({ quality: 0.7 });
+    if (!result.canceled) setImage(result.assets[0].uri);
+  };
+
+  const createProduct = async () => {
+    const formData = new FormData();
+    formData.append('file', { uri: image, name: 'photo.jpg', type: 'image/jpeg' } as any);
+    formData.append('title', title);
+    formData.append('base_price', price);
+    const res = await axios.post(`${API_URL}/products/create`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    await Sharing.shareAsync(res.data.whatsapp_link);
+  };
+
+  useEffect(() => {
+    if (screen === 'resell') {
+      axios.get(`${API_URL}/products/resellable`).then(res => setProducts(res.data));
+    }
+    if (screen === 'board') {
+      axios.get(`${API_URL}/leaderboard/weekly`).then(res => setLeaderboard(res.data.top_resellers));
+    }
+  }, [screen]);
+
+  return (
+    <ScrollView style={{ padding: 20, marginTop: 40 }}>
+      <Text style={{ fontSize: 28, fontWeight: 'bold', marginBottom: 20 }}>Kudrop</Text>
+      <View style={{ flexDirection: 'row', marginBottom: 20 }}>
+        <Button title="Create" onPress={() => setScreen('create')} />
+        <Button title="Resell" onPress={() => setScreen('resell')} />
+        <Button title="Leaderboard" onPress={() => setScreen('board')} />
+      </View>
+
+      {screen === 'create' && (
+        <>
+          <Button title="Pick Photo" onPress={pickImage} />
+          {image && <Image source={{ uri: image }} style={{ width: 200, height: 200, marginVertical: 10 }} />}
+          <TextInput placeholder="Product Title" value={title} onChangeText={setTitle} style={{ borderWidth: 1, padding: 8, marginVertical: 10 }} />
+          <TextInput placeholder="Price" value={price} onChangeText={setPrice} keyboardType="numeric" style={{ borderWidth: 1, padding: 8, marginVertical: 10 }} />
+          <Button title="Post to WhatsApp" onPress={createProduct} />
+        </>
+      )}
+
+      {screen === 'resell' && products.map((p: any) => (
+        <View key={p.id} style={{ borderWidth: 1, padding: 10, marginVertical: 5 }}>
+          <Text>{p.title} - K{p.base_price}</Text>
+        </View>
+      ))}
+
+      {screen === 'board' && leaderboard.map((item: any) => (
+        <View key={item.rank} style={{ flexDirection: 'row', justifyContent: 'space-between', padding: 10 }}>
+          <Text>#{item.rank} {item.name}</Text>
+          <Text>K{item.earnings}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
